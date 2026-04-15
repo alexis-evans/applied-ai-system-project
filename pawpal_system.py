@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import uuid
 from typing import Dict, List, Optional
 from enum import IntEnum
 from datetime import datetime, timedelta
@@ -46,6 +47,16 @@ class Owner:
                 all_tasks.extend(pet.tasks)
             return all_tasks
 
+    def to_planning_payload(self) -> Dict:
+        """Serialize the owner's current state into a JSON-safe payload for AI planning."""
+        return {
+            "owner_name": self.name or "",
+            "available_time_minutes": self.available_time_minutes,
+            "preferences": dict(self.preferences),
+            "pets": [pet.to_dict() for pet in self.pets],
+            "tasks": [task.to_planning_dict() for task in self.get_all_tasks()],
+        }
+
 
 @dataclass
 class Pet:
@@ -72,6 +83,15 @@ class Pet:
         """Get all pending tasks for this pet"""
         return [task for task in self.tasks if task.status == "pending"]
 
+    def to_dict(self) -> Dict:
+        """Serialize this pet into a JSON-safe structure."""
+        return {
+            "name": self.name,
+            "age": self.age,
+            "type": self.type,
+            "tasks": [task.to_planning_dict() for task in self.tasks],
+        }
+
 
 @dataclass
 class Task:
@@ -84,6 +104,7 @@ class Task:
     pet: Optional['Pet'] = None
     time: Optional[str] = None  # Scheduled time in "HH:MM" format (e.g., "09:30")
     due_date: Optional[datetime] = None  # Due date for recurring tasks
+    task_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     def change_status(self, new_status: str) -> None:
         """Change the status of this task"""
@@ -158,6 +179,22 @@ class Task:
             return new_task
 
         return None
+
+    def to_planning_dict(self) -> Dict:
+        """Serialize this task into a JSON-safe structure for planning and validation."""
+        return {
+            "task_id": self.task_id,
+            "description": self.description,
+            "duration": self.duration,
+            "priority": int(self.priority),
+            "priority_name": Priority(self.priority).name,
+            "status": self.status,
+            "frequency": self.frequency,
+            "pet_name": self.pet.name if self.pet else None,
+            "pet_type": self.pet.type if self.pet else None,
+            "time": self.time,
+            "due_date": self.due_date.isoformat() if self.due_date else None,
+        }
 
 
 class Scheduler:

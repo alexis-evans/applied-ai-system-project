@@ -30,7 +30,48 @@ Your final app should:
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+cp .env.example .env
 ```
+
+Add your Gemini API key to `.env` if you want AI-powered planning and explanations:
+
+```env
+GEMINI_API_KEY=your_api_key_here
+GEMINI_MODEL=gemini-2.5-flash
+PAWPAL_MAX_RETRIES=1
+PAWPAL_LOG_LEVEL=INFO
+```
+
+If `GEMINI_API_KEY` is missing, PawPal+ will still run by using the existing deterministic scheduler as a safe fallback.
+
+### Run the app
+
+```bash
+streamlit run app.py
+```
+
+### Run tests
+
+```bash
+python -m pytest
+```
+
+## Agentic AI Upgrade Plan
+
+The project now also includes an implementation roadmap for evolving PawPal+ into a Gemini-powered agentic system with validation, logging, retries, fallback scheduling, and clearer reproducibility steps.
+
+See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for the repo-specific plan.
+
+## AI Planning Flow
+
+PawPal+ now supports a hybrid planning architecture:
+
+- Gemini can propose a schedule and generate the explanation
+- deterministic validation checks whether the AI schedule is safe and complete
+- invalid AI schedules trigger retry or fallback behavior
+- the original rule-based scheduler remains available as the safety net
+
+This means the app stays usable even if the Gemini API is unavailable or returns an invalid plan.
 
 ### Suggested workflow
 
@@ -84,4 +125,3 @@ Confidence Level: ⭐️⭐️⭐️⭐️
 ## Demo 📸
 
 ![PawPal+ Demonstration Screenshot](PawPal_Final.png)
-

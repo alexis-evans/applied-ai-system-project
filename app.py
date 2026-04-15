@@ -1,6 +1,15 @@
 import streamlit as st
 from datetime import datetime
 from pawpal_system import Owner, Pet, Task, Scheduler, Priority
+from planning_service import PlanningService
+
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional dependency at runtime
+    load_dotenv = None
+
+if load_dotenv:
+    load_dotenv()
 
 st.set_page_config(
     page_title="PawPal+",
@@ -541,12 +550,12 @@ st.divider()
 # ============================================================================
 st.markdown('<p class="pawpal-section">📅 Generate Schedule</p>', unsafe_allow_html=True)
 scheduler_for_schedule = Scheduler(owner=st.session_state.owner)
+planning_service = PlanningService()
 
 col1, col2 = st.columns([1, 3])
 with col1:
     if st.button("Generate Schedule", type="primary", use_container_width=True):
-        # Step 3: Wire UI actions to logic
-        st.session_state.schedule = scheduler_for_schedule.generate_schedule()
+        st.session_state.schedule = planning_service.generate_schedule(st.session_state.owner)
 
 with col2:
     if st.button("Clear Schedule", use_container_width=True):
@@ -560,6 +569,19 @@ with col2:
 # Display schedule
 if st.session_state.schedule:
     schedule = st.session_state.schedule
+    metadata = schedule.get("metadata", {})
+    validation = schedule.get("validation", {})
+
+    if metadata.get("status"):
+        if metadata.get("source") == "ai":
+            st.success(metadata["status"])
+        else:
+            st.warning(metadata["status"])
+
+    if validation.get("warnings"):
+        with st.expander("Validation Warnings", expanded=False):
+            for warning in validation["warnings"]:
+                st.caption(f"• {warning}")
 
     # Explanation
     st.info(schedule["explanation"])
