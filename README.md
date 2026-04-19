@@ -268,6 +268,6 @@ This project taught me that building with AI is less about prompting once and mo
 
 ## Additional Artifacts
 
-- Architecture source: [uml_diagram.md](/Users/alexisevans/Documents/GitHub/applied-ai-system-project/uml_diagram.md)
-- Planning roadmap: [IMPLEMENTATION_PLAN.md](/Users/alexisevans/Documents/GitHub/applied-ai-system-project/IMPLEMENTATION_PLAN.md)
-- Reflection notes: [reflection.md](/Users/alexisevans/Documents/GitHub/applied-ai-system-project/reflection.md)
+- Architecture source: [uml_diagram.md](uml_diagram.md)
+- Planning roadmap: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
+- Reflection notes: [reflection.md](reflection.md)
