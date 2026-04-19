@@ -262,7 +262,7 @@ AI was helpful when shaping the project into a stronger systems design instead o
 
 One flawed AI suggestion was to assume that setup instructions using `python` were sufficient everywhere. In this environment, `python3` was the correct executable, so I corrected the documentation and demonstration commands to match what actually worked locally.
 
-## Reflection For A Future Employer
+## Reflection
 
 This project taught me that building with AI is less about prompting once and more about designing reliable systems around model behavior. The most valuable problem-solving pattern here was combining strengths: using AI for flexible planning and explanation, while using deterministic code for validation, recovery, observability, and reproducibility.
 
