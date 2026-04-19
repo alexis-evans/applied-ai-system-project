@@ -93,10 +93,12 @@ def test_task_update_task_updates_only_fields_provided():
     assert task.priority == Priority.HIGH
     assert task.frequency == "once"
     assert task.time == "08:00"
+    assert task.allow_overlap is False
     assert task.due_date == due
 
-    task.update_task(frequency="daily", time=None, due_date=None)
+    task.update_task(frequency="daily", allow_overlap=True, time=None, due_date=None)
     assert task.frequency == "daily"
+    assert task.allow_overlap is True
     assert task.time is None
     assert task.due_date is None
 
@@ -109,6 +111,7 @@ def test_recurrence_logic_daily_mark_complete_creates_next_day_task():
         duration=30,
         priority=Priority.HIGH,
         frequency="daily",
+        allow_overlap=True,
         due_date=due,
     )
     pet.add_task(task)
@@ -121,6 +124,7 @@ def test_recurrence_logic_daily_mark_complete_creates_next_day_task():
     assert new_task is not task
     assert new_task.status == "pending"
     assert new_task.frequency == "daily"
+    assert new_task.allow_overlap is True
     assert new_task.due_date == datetime(2026, 2, 11, 9, 0)
 
 
@@ -228,7 +232,7 @@ def test_generate_schedule_skips_invalid_durations_and_insufficient_total_time()
     too_long_reason = next(
         item["reason"] for item in schedule["skipped_tasks"] if item["task"] is too_long
     )
-    assert "Insufficient total available time" in too_long_reason
+    assert "Insufficient time remaining" in too_long_reason
     assert too_long.status == "skipped"
 
 
@@ -342,6 +346,26 @@ def test_conflict_detection_flags_duplicate_times_and_reports_message():
     assert "CONFLICT" in conflicts[0]["message"]
 
 
+def test_conflict_detection_allows_overlap_when_both_tasks_opt_in():
+    scheduler = Scheduler(owner=Owner(name="Alex"))
+
+    t1 = Task(description="Feed Cat 1", duration=10, time="08:00", allow_overlap=True)
+    t2 = Task(description="Feed Cat 2", duration=10, time="08:00", allow_overlap=True)
+
+    conflicts = scheduler.detect_conflicts([t1, t2])
+    assert conflicts == []
+
+
+def test_conflict_detection_still_flags_overlap_when_only_one_task_opts_in():
+    scheduler = Scheduler(owner=Owner(name="Alex"))
+
+    t1 = Task(description="Feed Cat 1", duration=10, time="08:00", allow_overlap=True)
+    t2 = Task(description="Medication", duration=10, time="08:00", allow_overlap=False)
+
+    conflicts = scheduler.detect_conflicts([t1, t2])
+    assert len(conflicts) == 1
+
+
 def test_conflict_detection_ignores_back_to_back_or_missing_time_duration():
     scheduler = Scheduler(owner=Owner(name="Alex"))
 
@@ -368,3 +392,38 @@ def test_generate_schedule_explanation_contains_owner_preference_and_summary_sec
     assert "Schedule generated for Alex with 30min available time, starting in the morning." in explanation
     assert "Scheduled 1 task(s) using 20min total." in explanation
     assert "Skipped 1 task(s)" in explanation
+
+
+def test_generate_schedule_can_place_compatible_flexible_tasks_at_the_same_time():
+    owner = Owner(name="Alex", available_time_minutes=60, preferences={"preferred_time_window": "morning"})
+    pet = Pet(name="Milo", age=2, type="Cat")
+    owner.add_pet(pet)
+
+    t1 = Task(description="Feed Cat 1", duration=30, priority=Priority.HIGH, allow_overlap=True)
+    t2 = Task(description="Feed Cat 2", duration=30, priority=Priority.HIGH, allow_overlap=True)
+    pet.add_task(t1)
+    pet.add_task(t2)
+
+    schedule = Scheduler(owner=owner).generate_schedule()
+
+    scheduled = {item["task"].description: item["start_time_minutes"] for item in schedule["scheduled_tasks"]}
+    assert scheduled["Feed Cat 1"] == 360
+    assert scheduled["Feed Cat 2"] == 360
+    assert schedule["total_time_used"] == 30
+
+
+def test_generate_schedule_can_use_later_overlap_slot_when_budget_blocks_separate_slot():
+    owner = Owner(name="Alex", available_time_minutes=30, preferences={"preferred_time_window": "morning"})
+    pet = Pet(name="Milo", age=2, type="Cat")
+    owner.add_pet(pet)
+
+    t1 = Task(description="Feed Cat 1", duration=20, priority=Priority.HIGH, allow_overlap=True, time="09:00")
+    t2 = Task(description="Feed Cat 2", duration=20, priority=Priority.MEDIUM, allow_overlap=True)
+    pet.add_task(t1)
+    pet.add_task(t2)
+
+    schedule = Scheduler(owner=owner).generate_schedule()
+
+    t2_entry = next(item for item in schedule["scheduled_tasks"] if item["task"] is t2)
+    assert t2_entry["start_time_minutes"] == 9 * 60
+    assert schedule["total_time_used"] == 20

@@ -123,7 +123,7 @@ Hard constraints:
 - Keep fixed-time tasks at their exact provided time.
 - Do not change task durations.
 - Keep total scheduled minutes within available_time_minutes.
-- Do not overlap scheduled tasks.
+- Do not overlap scheduled tasks unless every overlapping task in that overlap has allow_overlap set to true.
 - Return JSON only.
 
 Return exactly this JSON shape:

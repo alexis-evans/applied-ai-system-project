@@ -73,7 +73,7 @@ def test_validate_schedule_plan_rejects_fixed_time_changes_and_missing_tasks():
     assert any("did not account for every pending task" in error for error in result.errors)
 
 
-def test_validate_schedule_plan_rejects_overlaps_and_excess_total_time():
+def test_validate_schedule_plan_rejects_overlaps():
     owner = Owner(name="Alex", available_time_minutes=30)
     pet = Pet(name="Milo", age=2, type="Cat")
     owner.add_pet(pet)
@@ -106,4 +106,73 @@ def test_validate_schedule_plan_rejects_overlaps_and_excess_total_time():
 
     assert result.is_valid is False
     assert any("overlaps" in error for error in result.errors)
-    assert any("exceeds available time" in error for error in result.errors)
+
+
+def test_validate_schedule_plan_allows_overlap_when_both_tasks_opt_in():
+    owner = Owner(name="Alex", available_time_minutes=40)
+    pet = Pet(name="Milo", age=2, type="Cat")
+    owner.add_pet(pet)
+
+    t1 = Task(description="Feed Cat 1", duration=20, priority=Priority.MEDIUM, allow_overlap=True)
+    t2 = Task(description="Feed Cat 2", duration=20, priority=Priority.MEDIUM, allow_overlap=True)
+    pet.add_task(t1)
+    pet.add_task(t2)
+
+    plan = {
+        "scheduled_tasks": [
+            {
+                "task_id": t1.task_id,
+                "start_time": "09:00",
+                "end_time": "09:20",
+                "reason": "Can happen alongside the other feeding task.",
+            },
+            {
+                "task_id": t2.task_id,
+                "start_time": "09:00",
+                "end_time": "09:20",
+                "reason": "Can happen alongside the other feeding task.",
+            },
+        ],
+        "skipped_tasks": [],
+        "summary": "Feed both cats together.",
+    }
+
+    result = validate_schedule_plan(plan, owner)
+
+    assert result.is_valid is True
+    assert not any("overlaps" in error for error in result.errors)
+
+
+def test_validate_schedule_plan_uses_elapsed_time_for_available_time_budget():
+    owner = Owner(name="Alex", available_time_minutes=30)
+    pet = Pet(name="Milo", age=2, type="Cat")
+    owner.add_pet(pet)
+
+    t1 = Task(description="Feed Cat 1", duration=20, priority=Priority.MEDIUM, allow_overlap=True)
+    t2 = Task(description="Feed Cat 2", duration=20, priority=Priority.MEDIUM, allow_overlap=True)
+    pet.add_task(t1)
+    pet.add_task(t2)
+
+    plan = {
+        "scheduled_tasks": [
+            {
+                "task_id": t1.task_id,
+                "start_time": "09:00",
+                "end_time": "09:20",
+                "reason": "Can happen alongside the other feeding task.",
+            },
+            {
+                "task_id": t2.task_id,
+                "start_time": "09:10",
+                "end_time": "09:30",
+                "reason": "Partially overlaps but only uses 30 minutes of real time.",
+            },
+        ],
+        "skipped_tasks": [],
+        "summary": "Both feedings fit in the same half hour block.",
+    }
+
+    result = validate_schedule_plan(plan, owner)
+
+    assert result.is_valid is True
+    assert not any("exceeds available time" in error for error in result.errors)

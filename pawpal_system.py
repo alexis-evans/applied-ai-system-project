@@ -103,6 +103,7 @@ class Task:
     frequency: str = "once"  # once, daily, weekly
     pet: Optional['Pet'] = None
     time: Optional[str] = None  # Scheduled time in "HH:MM" format (e.g., "09:30")
+    allow_overlap: bool = False  # True when this task may intentionally happen alongside another compatible task
     due_date: Optional[datetime] = None  # Due date for recurring tasks
     task_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
@@ -124,6 +125,7 @@ class Task:
                     duration: Optional[int] = None,
                     priority: Optional[int] = None,
                     frequency: Optional[str] = None,
+                    allow_overlap: Optional[bool] = None,
                     time=...,
                     due_date=...) -> None:
         """Update task properties"""
@@ -135,6 +137,8 @@ class Task:
             self.priority = priority
         if frequency is not None:
             self.frequency = frequency
+        if allow_overlap is not None:
+            self.allow_overlap = allow_overlap
         if time is not ...:
             self.time = time
         if due_date is not ...:
@@ -169,6 +173,7 @@ class Task:
                 frequency=self.frequency,
                 pet=self.pet,
                 time=self.time,
+                allow_overlap=self.allow_overlap,
                 due_date=next_due_date
             )
 
@@ -193,6 +198,7 @@ class Task:
             "pet_name": self.pet.name if self.pet else None,
             "pet_type": self.pet.type if self.pet else None,
             "time": self.time,
+            "allow_overlap": self.allow_overlap,
             "due_date": self.due_date.isoformat() if self.due_date else None,
         }
 
@@ -241,9 +247,8 @@ class Scheduler:
         skipped_tasks = []
         preferred_start_time = self._get_start_time()
         available_time_minutes = self._calculate_total_available_time()
-        remaining_time_minutes = available_time_minutes
         total_time_used = 0
-        occupied_intervals = []  # Tuples of (start_minutes, end_minutes)
+        occupied_intervals = []  # Tuples of (start_minutes, end_minutes, task)
         day_end_time = 24 * 60
 
         # Handle fixed-time tasks first, so explicit user times are honored.
@@ -264,19 +269,23 @@ class Scheduler:
                 })
                 continue
 
-            if task.duration > remaining_time_minutes:
+            task_start_time = self._time_to_minutes(task.time)
+            task_end_time = task_start_time + task.duration
+            projected_time_used = self._calculate_occupied_time(
+                occupied_intervals + [(task_start_time, task_end_time, task)]
+            )
+
+            if projected_time_used > available_time_minutes:
+                remaining_time = max(0, available_time_minutes - total_time_used)
                 skipped_tasks.append({
                     "task": task,
                     "reason": (
-                        f"Insufficient total available time ({remaining_time_minutes}min remaining, "
+                        f"Insufficient total available time ({remaining_time}min remaining, "
                         f"{task.duration}min needed)"
                     )
                 })
                 task.change_status("skipped")
                 continue
-
-            task_start_time = self._time_to_minutes(task.time)
-            task_end_time = task_start_time + task.duration
 
             priority_label = Priority(task.priority).name
             pet_name = task.pet.name if task.pet else "unknown pet"
@@ -290,10 +299,9 @@ class Scheduler:
                 "reason": f"Fixed time: {task.time}, Priority: {priority_label}, Duration: {task.duration}min, Pet: {pet_name}"
             })
 
-            occupied_intervals.append((task_start_time, task_end_time))
+            occupied_intervals.append((task_start_time, task_end_time, task))
             occupied_intervals.sort(key=lambda interval: interval[0])
-            remaining_time_minutes -= task.duration
-            total_time_used += task.duration
+            total_time_used = self._calculate_occupied_time(occupied_intervals)
             task.change_status("scheduled")
 
         # Schedule flexible tasks by priority in remaining gaps.
@@ -307,22 +315,13 @@ class Scheduler:
                 })
                 continue
 
-            if task.duration > remaining_time_minutes:
-                skipped_tasks.append({
-                    "task": task,
-                    "reason": (
-                        f"Insufficient total available time ({remaining_time_minutes}min remaining, "
-                        f"{task.duration}min needed)"
-                    )
-                })
-                task.change_status("skipped")
-                continue
-
             task_start_time = self._find_available_slot(
                 task.duration,
                 occupied_intervals,
                 preferred_start_time,
-                day_end_time
+                day_end_time,
+                task=task,
+                available_time_minutes=available_time_minutes,
             )
 
             # If no slot exists in preferred window onward, try earlier times too.
@@ -331,7 +330,9 @@ class Scheduler:
                     task.duration,
                     occupied_intervals,
                     0,
-                    preferred_start_time
+                    preferred_start_time,
+                    task=task,
+                    available_time_minutes=available_time_minutes,
                 )
 
             if task_start_time is not None:
@@ -349,15 +350,12 @@ class Scheduler:
                     "reason": f"Priority: {priority_label}, Duration: {task.duration}min, Pet: {pet_name}"
                 })
 
-                occupied_intervals.append((task_start_time, task_end_time))
+                occupied_intervals.append((task_start_time, task_end_time, task))
                 occupied_intervals.sort(key=lambda interval: interval[0])
-                remaining_time_minutes -= task.duration
-                total_time_used += task.duration
+                total_time_used = self._calculate_occupied_time(occupied_intervals)
                 task.change_status("scheduled")
             else:
-                remaining = self._calculate_free_time(
-                    occupied_intervals, 0, day_end_time
-                )
+                remaining = max(0, available_time_minutes - total_time_used)
                 skipped_tasks.append({
                     "task": task,
                     "reason": (
@@ -427,30 +425,75 @@ class Scheduler:
         return hours * 60 + minutes
 
     def _find_available_slot(self, duration: int, intervals: List[tuple],
-                             window_start: int, window_end: int) -> Optional[int]:
+                             window_start: int, window_end: int,
+                             task: Optional[Task] = None,
+                             available_time_minutes: Optional[int] = None) -> Optional[int]:
         """Find earliest available slot of `duration` in [window_start, window_end)."""
-        cursor = window_start
+        sorted_intervals = sorted(intervals, key=lambda interval: interval[0])
 
-        for start, end in sorted(intervals, key=lambda interval: interval[0]):
-            if cursor + duration <= start:
-                return cursor
-            if end > cursor:
-                cursor = end
+        candidate_starts = {window_start}
+        for start, end, existing_task in sorted_intervals:
+            if task is not None and self._tasks_can_overlap(task, existing_task):
+                candidate_starts.add(max(window_start, start))
+            candidate_starts.add(max(window_start, end))
 
-        if cursor + duration <= window_end:
-            return cursor
+        for candidate_start in sorted(candidate_starts):
+            candidate_end = candidate_start + duration
+            if candidate_end > window_end:
+                continue
+
+            if not self._slot_is_compatible(candidate_start, candidate_end, sorted_intervals, task):
+                continue
+
+            if available_time_minutes is not None:
+                projected_time_used = self._calculate_occupied_time(
+                    sorted_intervals + [(candidate_start, candidate_end, task)]
+                )
+                if projected_time_used > available_time_minutes:
+                    continue
+
+            return candidate_start
 
         return None
 
     def _calculate_free_time(self, intervals: List[tuple], window_start: int, window_end: int) -> int:
         """Calculate total free minutes in the scheduling window."""
         occupied_time = 0
-        for start, end in intervals:
+        for start, end, _task in intervals:
             clamped_start = max(start, window_start)
             clamped_end = min(end, window_end)
             if clamped_start < clamped_end:
                 occupied_time += (clamped_end - clamped_start)
         return max(0, (window_end - window_start) - occupied_time)
+
+    def _tasks_can_overlap(self, task1: Task, task2: Task) -> bool:
+        """Return True only when both tasks explicitly allow simultaneous scheduling."""
+        return bool(task1.allow_overlap and task2.allow_overlap)
+
+    def _slot_is_compatible(self, candidate_start: int, candidate_end: int,
+                            intervals: List[tuple], task: Optional[Task]) -> bool:
+        for start, end, existing_task in intervals:
+            overlaps_candidate = candidate_start < end and candidate_end > start
+            if not overlaps_candidate:
+                continue
+            if task is not None and self._tasks_can_overlap(task, existing_task):
+                continue
+            return False
+        return True
+
+    def _calculate_occupied_time(self, intervals: List[tuple]) -> int:
+        """Calculate elapsed scheduled time by merging all occupied intervals."""
+        if not intervals:
+            return 0
+
+        merged = []
+        for start, end, _task in sorted(intervals, key=lambda interval: interval[0]):
+            if not merged or start >= merged[-1][1]:
+                merged.append([start, end])
+            else:
+                merged[-1][1] = max(merged[-1][1], end)
+
+        return sum(end - start for start, end in merged)
 
     def _generate_explanation(self, scheduled_tasks: List[Dict],
                             skipped_tasks: List[Dict],
@@ -567,6 +610,9 @@ class Scheduler:
 
                 # Check for overlap: tasks overlap if one starts before the other ends
                 if task1_start < task2_end and task2_start < task1_end:
+                    if self._tasks_can_overlap(task1, task2):
+                        continue
+
                     pet1_name = task1.pet.name if task1.pet else "Unknown"
                     pet2_name = task2.pet.name if task2.pet else "Unknown"
 

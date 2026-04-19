@@ -41,6 +41,23 @@ def _task_lookup(owner: Owner) -> Dict[str, Task]:
     return {task.task_id: task for task in owner.get_all_tasks()}
 
 
+def _tasks_can_overlap(task1: Task, task2: Task) -> bool:
+    return bool(task1.allow_overlap and task2.allow_overlap)
+
+
+def _occupied_minutes(intervals: List[Tuple[int, int]]) -> int:
+    if not intervals:
+        return 0
+
+    merged: List[List[int]] = []
+    for start, end in sorted(intervals, key=lambda interval: interval[0]):
+        if not merged or start >= merged[-1][1]:
+            merged.append([start, end])
+        else:
+            merged[-1][1] = max(merged[-1][1], end)
+    return sum(end - start for start, end in merged)
+
+
 def validate_schedule_plan(plan: Dict, owner: Owner) -> ValidationResult:
     """Validate an AI-generated schedule proposal against hard business rules."""
     errors: List[str] = []
@@ -59,7 +76,7 @@ def validate_schedule_plan(plan: Dict, owner: Owner) -> ValidationResult:
 
     seen_ids = set()
     occupied: List[Tuple[int, int, str]] = []
-    total_scheduled = 0
+    occupied_ranges: List[Tuple[int, int]] = []
 
     for entry in scheduled_tasks:
         if not isinstance(entry, dict):
@@ -105,11 +122,12 @@ def validate_schedule_plan(plan: Dict, owner: Owner) -> ValidationResult:
             errors.append(f"Task {task_id} must stay fixed at {task.time}.")
 
         for other_start, other_end, other_task_id in occupied:
-            if start_minutes < other_end and end_minutes > other_start:
+            other_task = lookup[other_task_id]
+            if start_minutes < other_end and end_minutes > other_start and not _tasks_can_overlap(task, other_task):
                 errors.append(f"Task {task_id} overlaps with task {other_task_id}.")
 
         occupied.append((start_minutes, end_minutes, task_id))
-        total_scheduled += duration
+        occupied_ranges.append((start_minutes, end_minutes))
 
     for entry in skipped_tasks:
         if not isinstance(entry, dict):
@@ -133,6 +151,7 @@ def validate_schedule_plan(plan: Dict, owner: Owner) -> ValidationResult:
             "The plan did not account for every pending task: " + ", ".join(sorted(missing_pending))
         )
 
+    total_scheduled = _occupied_minutes(occupied_ranges)
     if total_scheduled > owner.available_time_minutes:
         errors.append(
             f"Scheduled time {total_scheduled} exceeds available time {owner.available_time_minutes}."

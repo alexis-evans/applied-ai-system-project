@@ -322,6 +322,11 @@ if st.session_state.owner.pets:
                     placeholder="e.g., 08:00",
                     help="Optional - leave blank for unscheduled"
                 )
+                task_allow_overlap = st.checkbox(
+                    "Allow simultaneous scheduling",
+                    key="task_allow_overlap_input",
+                    help="Use this when this task can happen at the same time as another task, like feeding two pets together."
+                )
             with col2:
                 task_priority = st.selectbox(
                     "Priority",
@@ -356,6 +361,7 @@ if st.session_state.owner.pets:
                         priority=priority_map[task_priority],
                         frequency=task_frequency,
                         time=parsed_time if parsed_time else None,
+                        allow_overlap=task_allow_overlap,
                         due_date=datetime.now() if task_frequency in ["daily", "weekly"] else None
                     )
                     selected_pet.add_task(new_task)
@@ -408,6 +414,7 @@ if st.session_state.owner.pets:
         conflicts = scheduler.detect_conflicts(all_tasks)
         if conflicts:
             st.warning(f"⚠️ **{len(conflicts)} Scheduling Conflict(s) Detected!**")
+            st.caption("Only overlaps between tasks that have not both enabled simultaneous scheduling are flagged here.")
             with st.expander("View Conflicts", expanded=False):
                 for conflict in conflicts:
                     st.error(conflict['message'])
@@ -417,12 +424,13 @@ if st.session_state.owner.pets:
         for idx, task in enumerate(filtered_tasks):
             pet_name = task.pet.name if task.pet else "No pet"
             time_str = f" 🕐 {task.time}" if task.time else ""
+            overlap_str = " · simultaneous OK" if task.allow_overlap else ""
             task_id = id(task)
 
             with st.container():
                 col1, col2, col3, col4, col5, col6, col7 = st.columns([3.3, 1.2, 1.2, 1.4, 1, 1, 1])
                 with col1:
-                    st.markdown(f"**{task.description}**  \n{pet_name}{time_str}")
+                    st.markdown(f"**{task.description}**  \n{pet_name}{time_str}{overlap_str}")
                 with col2:
                     st.markdown(f"`{task.duration} min`")
                 with col3:
@@ -485,6 +493,12 @@ if st.session_state.owner.pets:
                             key=f"edit_time_{task_id}",
                             help="Optional - leave blank for unscheduled"
                         )
+                        edit_allow_overlap = st.checkbox(
+                            "Allow simultaneous scheduling",
+                            value=task.allow_overlap,
+                            key=f"edit_allow_overlap_{task_id}",
+                            help="Use this when this task can happen at the same time as another task, like feeding two pets together."
+                        )
                     with edit_col2:
                         edit_pet_label = st.selectbox(
                             "Pet",
@@ -522,6 +536,7 @@ if st.session_state.owner.pets:
                                     duration=edit_duration,
                                     priority=priority_map[edit_priority],
                                     frequency=edit_frequency,
+                                    allow_overlap=edit_allow_overlap,
                                     time=parsed_time if parsed_time else None,
                                     due_date=new_due_date
                                 )
@@ -571,6 +586,7 @@ if st.session_state.schedule:
     schedule = st.session_state.schedule
     metadata = schedule.get("metadata", {})
     validation = schedule.get("validation", {})
+    trace = schedule.get("trace", [])
 
     if metadata.get("status"):
         if metadata.get("source") == "ai":
@@ -578,10 +594,36 @@ if st.session_state.schedule:
         else:
             st.warning(metadata["status"])
 
+    review_col1, review_col2, review_col3, review_col4 = st.columns(4)
+    review_col1.metric("Plan Source", (metadata.get("source") or "unknown").upper())
+    review_col2.metric("Attempts", metadata.get("attempts", 0))
+    review_col3.metric("Confidence", f"{validation.get('quality_score', metadata.get('confidence', 0.0)):.2f}")
+    review_col4.metric("Validation", "Pass" if validation.get("is_valid") else "Fallback")
+
+    if metadata.get("run_id"):
+        st.caption(f"Run ID: `{metadata['run_id']}`")
+
+    if validation.get("errors"):
+        with st.expander("Validation Errors", expanded=False):
+            for error in validation["errors"]:
+                st.caption(f"• {error}")
+
     if validation.get("warnings"):
         with st.expander("Validation Warnings", expanded=False):
             for warning in validation["warnings"]:
                 st.caption(f"• {warning}")
+
+    if trace:
+        with st.expander("Agent Workflow Trace", expanded=False):
+            for item in trace:
+                st.markdown(
+                    f"**{item.get('step', 'step')}** · `{item.get('status', 'unknown')}`  \n"
+                    f"{item.get('detail', '')}"
+                )
+
+    st.caption(
+        "Human review checkpoint: inspect the source, confidence, validator output, and workflow trace before trusting the plan."
+    )
 
     # Explanation
     st.info(schedule["explanation"])

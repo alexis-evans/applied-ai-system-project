@@ -44,18 +44,60 @@ class PlanningService:
         run_id = str(uuid.uuid4())
         planning_payload = owner.to_planning_payload()
         self.logger.info("planner_started run_id=%s", run_id)
+        trace = [
+            {
+                "step": "serialize_owner_state",
+                "status": "completed",
+                "detail": f"Prepared {len(planning_payload.get('tasks', []))} task(s) for planning.",
+            }
+        ]
 
         if not owner.get_all_tasks():
-            return Scheduler(owner=owner).generate_schedule()
+            schedule = Scheduler(owner=owner).generate_schedule()
+            schedule["metadata"] = {
+                "source": "fallback",
+                "status": "No tasks were available for AI planning",
+                "run_id": run_id,
+                "attempts": 0,
+                "confidence": 1.0,
+            }
+            schedule["validation"] = {
+                "is_valid": True,
+                "errors": [],
+                "warnings": [],
+                "quality_score": 1.0,
+            }
+            schedule["trace"] = trace + [
+                {
+                    "step": "short_circuit_no_tasks",
+                    "status": "completed",
+                    "detail": "Returned deterministic scheduler output because there were no tasks to plan.",
+                }
+            ]
+            return schedule
 
         last_validation = None
         last_error = None
 
         if self.planner.is_configured():
+            trace.append(
+                {
+                    "step": "ai_planner_available",
+                    "status": "completed",
+                    "detail": "Gemini planner is configured; attempting AI schedule generation.",
+                }
+            )
             validation_errors = None
             for attempt in range(self.config.max_retries + 1):
                 started_at = time.perf_counter()
                 try:
+                    trace.append(
+                        {
+                            "step": "generate_ai_plan",
+                            "status": "in_progress",
+                            "detail": f"Attempt {attempt + 1} started.",
+                        }
+                    )
                     proposed_plan = self.planner.generate_schedule_proposal(
                         planning_payload,
                         validation_errors=validation_errors,
@@ -78,7 +120,23 @@ class PlanningService:
                             "status": "AI-generated schedule accepted",
                             "run_id": run_id,
                             "attempts": attempt + 1,
+                            "confidence": last_validation["quality_score"],
                         }
+                        trace[-1] = {
+                            "step": "generate_ai_plan",
+                            "status": "completed",
+                            "detail": (
+                                f"Attempt {attempt + 1} produced a valid plan "
+                                f"(quality score {last_validation['quality_score']})."
+                            ),
+                        }
+                        accepted_schedule["trace"] = trace + [
+                            {
+                                "step": "human_review_ready",
+                                "status": "completed",
+                                "detail": "Plan, confidence score, and validation warnings are available in the UI for review.",
+                            }
+                        ]
                         accepted_schedule["explanation"] = self._safe_explanation(
                             planning_payload,
                             accepted_schedule,
@@ -88,6 +146,14 @@ class PlanningService:
                         return accepted_schedule
 
                     validation_errors = validation.errors
+                    trace[-1] = {
+                        "step": "generate_ai_plan",
+                        "status": "completed",
+                        "detail": (
+                            f"Attempt {attempt + 1} failed validation with "
+                            f"{len(validation.errors)} error(s); retrying with validator feedback."
+                        ),
+                    }
                     self.logger.warning(
                         "planner_validation_failed run_id=%s attempt=%s errors=%s",
                         run_id,
@@ -96,6 +162,11 @@ class PlanningService:
                     )
                 except (PlannerConfigurationError, PlannerExecutionError) as exc:
                     last_error = str(exc)
+                    trace[-1] = {
+                        "step": "generate_ai_plan",
+                        "status": "failed",
+                        "detail": f"Attempt {attempt + 1} failed: {exc}",
+                    }
                     self.logger.warning(
                         "planner_retry_failed run_id=%s attempt=%s error=%s",
                         run_id,
@@ -105,12 +176,24 @@ class PlanningService:
                     break
                 except Exception as exc:
                     last_error = str(exc)
+                    trace[-1] = {
+                        "step": "generate_ai_plan",
+                        "status": "failed",
+                        "detail": f"Attempt {attempt + 1} raised an unexpected error: {exc}",
+                    }
                     self.logger.exception(
                         "planner_unexpected_failure run_id=%s attempt=%s", run_id, attempt
                     )
                     break
         else:
             last_error = "Gemini is not configured."
+            trace.append(
+                {
+                    "step": "ai_planner_available",
+                    "status": "failed",
+                    "detail": last_error,
+                }
+            )
 
         fallback_schedule = Scheduler(owner=owner).generate_schedule()
         fallback_schedule["validation"] = last_validation or {
@@ -124,8 +207,21 @@ class PlanningService:
             "status": "AI planning failed, safe fallback scheduler used",
             "run_id": run_id,
             "attempts": 0 if not self.planner.is_configured() else self.config.max_retries + 1,
+            "confidence": fallback_schedule["validation"]["quality_score"],
         }
         self.logger.info("planner_fallback_used run_id=%s reason=%s", run_id, last_error)
+        fallback_schedule["trace"] = trace + [
+            {
+                "step": "fallback_scheduler",
+                "status": "completed",
+                "detail": "Deterministic scheduler generated the final schedule after AI planning was unavailable or invalid.",
+            },
+            {
+                "step": "human_review_ready",
+                "status": "completed",
+                "detail": "Fallback result, validator feedback, and logs are available for review.",
+            },
+        ]
         fallback_schedule["explanation"] = self._safe_explanation(
             planning_payload,
             fallback_schedule,
@@ -142,7 +238,7 @@ class PlanningService:
                 task.change_status("pending")
 
         scheduled_tasks = []
-        total_time_used = 0
+        occupied_intervals = []
         for entry in plan.get("scheduled_tasks", []):
             task = lookup[entry["task_id"]]
             start_minutes = Scheduler(owner=owner)._time_to_minutes(entry["start_time"])
@@ -158,7 +254,7 @@ class PlanningService:
                     "reason": entry["reason"],
                 }
             )
-            total_time_used += task.duration or 0
+            occupied_intervals.append((start_minutes, end_minutes, task))
 
         skipped_tasks = []
         for entry in plan.get("skipped_tasks", []):
@@ -175,7 +271,7 @@ class PlanningService:
         return {
             "scheduled_tasks": scheduled_tasks,
             "skipped_tasks": skipped_tasks,
-            "total_time_used": total_time_used,
+            "total_time_used": Scheduler(owner=owner)._calculate_occupied_time(occupied_intervals),
             "explanation": plan.get("summary", "AI-generated schedule."),
         }
 

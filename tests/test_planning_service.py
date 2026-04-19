@@ -55,9 +55,11 @@ def test_planning_service_accepts_valid_ai_plan():
     result = service.generate_schedule(owner)
 
     assert result["metadata"]["source"] == "ai"
+    assert result["metadata"]["confidence"] == 1.0
     assert result["scheduled_tasks"][0]["task"] is walk
     assert result["explanation"] == "AI explanation"
     assert walk.status == "scheduled"
+    assert any(step["step"] == "human_review_ready" for step in result["trace"])
 
 
 def test_planning_service_falls_back_after_invalid_ai_plan():
@@ -91,6 +93,8 @@ def test_planning_service_falls_back_after_invalid_ai_plan():
     assert result["scheduled_tasks"]
     assert any(item["task"] is walk for item in result["scheduled_tasks"])
     assert result["validation"]["is_valid"] is False
+    assert result["metadata"]["confidence"] == result["validation"]["quality_score"]
+    assert any(step["step"] == "fallback_scheduler" for step in result["trace"])
 
 
 def test_planning_service_uses_fallback_when_planner_not_configured():
@@ -107,3 +111,44 @@ def test_planning_service_uses_fallback_when_planner_not_configured():
 
     assert result["metadata"]["source"] == "fallback"
     assert result["scheduled_tasks"][0]["task"] is feed
+    assert any(step["step"] == "ai_planner_available" and step["status"] == "failed" for step in result["trace"])
+
+
+def test_planning_service_reports_elapsed_time_for_overlap_aware_ai_plan():
+    owner = Owner(name="Alex", available_time_minutes=30)
+    pet = Pet(name="Milo", age=2, type="Cat")
+    owner.add_pet(pet)
+
+    t1 = Task(description="Feed Cat 1", duration=20, priority=Priority.MEDIUM, allow_overlap=True)
+    t2 = Task(description="Feed Cat 2", duration=20, priority=Priority.MEDIUM, allow_overlap=True)
+    pet.add_task(t1)
+    pet.add_task(t2)
+
+    planner = StubPlanner(
+        proposals=[
+            {
+                "scheduled_tasks": [
+                    {
+                        "task_id": t1.task_id,
+                        "start_time": "09:00",
+                        "end_time": "09:20",
+                        "reason": "Feed both cats in the same visit.",
+                    },
+                    {
+                        "task_id": t2.task_id,
+                        "start_time": "09:10",
+                        "end_time": "09:30",
+                        "reason": "Overlap is intentional and allowed.",
+                    },
+                ],
+                "skipped_tasks": [],
+                "summary": "Both feedings fit in one half-hour block.",
+            }
+        ]
+    )
+
+    service = PlanningService(planner=planner, config=PlanningServiceConfig(max_retries=1))
+    result = service.generate_schedule(owner)
+
+    assert result["metadata"]["source"] == "ai"
+    assert result["total_time_used"] == 30
