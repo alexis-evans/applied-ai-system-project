@@ -271,6 +271,7 @@ This project taught me that building with AI is less about prompting once and mo
 - Architecture source: [uml_diagram.md](uml_diagram.md)
 - Planning roadmap: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 - Reflection notes: [reflection.md](reflection.md)
+- Model card: [model_card.md](model_card.md)
 
 ## Video Walkthrough
 https://github.com/user-attachments/assets/01b08fae-70f2-4aed-bb20-1d7f82a259b5
